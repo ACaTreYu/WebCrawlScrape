@@ -2,6 +2,30 @@
 
 All notable changes to WebCrawlScrape will be documented in this file.
 
+## [00.00.03] - 2026-01-21
+
+### Added
+- **New GUI layout** - Side-by-side design with categories on left, extensions on right
+- **Multi-category selection** - Select multiple categories at once (e.g., Images + Documents)
+- **Custom categories** - Create your own categories with custom extensions via "+ Add" button
+- **Save extensions to category** - Add extensions to any existing category (built-in or custom)
+- **Persistent custom categories** - Custom categories and additions saved to `custom_categories.json`
+- **Midi preset** - New built-in category with `.mid` and `.midi` extensions
+
+### Changed
+- Removed dropdown selector, replaced with checkbox list for all categories
+- Extensions now display in a 3-column grid with vertical scrolling
+- Categories displayed in compact vertical list
+- "All Files" checkbox at top of category list
+- Improved category section with compact "+" button for adding custom categories
+
+### Technical
+- `custom_categories.json` - Stores user-created categories and additions to built-in categories
+- `load_custom_categories()` / `save_custom_categories()` - JSON persistence methods
+- `category_additions` dict - Tracks user extensions added to built-in categories
+
+---
+
 ## [00.00.02] - 2026-01-21
 
 ### Added

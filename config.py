@@ -20,6 +20,7 @@ EXTENSION_PRESETS = {
     "audio": {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac"},
     "video": {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv"},
     "code": {".py", ".js", ".html", ".css", ".json", ".xml", ".yaml", ".yml"},
+    "midi": {".mid", ".midi"},
     "arc": {".zip", ".map", ".rec", ".png", ".jpg"},  # ARC-specific
     "all": set(),  # Empty = match any extension
 }

@@ -9,23 +9,32 @@ import threading
 import os
 import sys
 import re
+import json
 from urllib.parse import urlparse
 
 from config import EXTENSION_PRESETS, DEFAULT_MAX_PAGES
 from crawler import crawl
 from version import VERSION
 
+# Config file for saving custom categories
+CUSTOM_CATEGORIES_FILE = os.path.join(os.path.dirname(__file__), "custom_categories.json")
+
 
 class CrawlerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title(f"WebCrawlScrape v{VERSION}")
-        self.root.geometry("650x680")
+        self.root.geometry("700x750")
         self.root.resizable(True, True)
 
         self.is_crawling = False
         self.ext_checkboxes = {}  # Store extension checkbox variables
+        self.category_vars = {}  # Store category checkbox variables
+        self.custom_categories = {}  # Store custom categories {name: set of extensions}
+        self.category_additions = {}  # Store user additions to built-in categories {name: set}
+        self.load_custom_categories()
         self.create_widgets()
+        self.load_custom_category_checkboxes()
 
     def create_widgets(self):
         # Main frame with padding
@@ -44,54 +53,92 @@ class CrawlerGUI:
         types_frame = ttk.LabelFrame(main_frame, text="File Types", padding="5")
         types_frame.pack(fill=tk.X, pady=(0, 10))
 
-        # Preset dropdown row
-        preset_row = ttk.Frame(types_frame)
-        preset_row.pack(fill=tk.X, padx=5, pady=5)
+        # Main container: categories on left, extensions on right
+        types_container = ttk.Frame(types_frame)
+        types_container.pack(fill=tk.BOTH, padx=5, pady=5)
 
-        ttk.Label(preset_row, text="Category:").pack(side=tk.LEFT)
-        self.preset_var = tk.StringVar(value="images")
-        preset_combo = ttk.Combobox(
-            preset_row,
-            textvariable=self.preset_var,
-            values=list(EXTENSION_PRESETS.keys()),
-            state="readonly",
-            width=15
-        )
-        preset_combo.pack(side=tk.LEFT, padx=(5, 10))
-        preset_combo.bind("<<ComboboxSelected>>", self.on_preset_change)
+        # === LEFT SIDE: Categories ===
+        left_frame = ttk.Frame(types_container, width=180)
+        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+        left_frame.pack_propagate(False)
 
-        # Select All / Deselect All buttons
-        ttk.Button(preset_row, text="Select All", command=self.select_all_exts, width=10).pack(side=tk.LEFT, padx=2)
-        ttk.Button(preset_row, text="Clear All", command=self.clear_all_exts, width=10).pack(side=tk.LEFT, padx=2)
+        ttk.Label(left_frame, text="Categories", font=("TkDefaultFont", 9, "bold")).pack(anchor=tk.W)
 
-        # Extension checkboxes frame (scrollable)
-        checkbox_container = ttk.Frame(types_frame)
-        checkbox_container.pack(fill=tk.X, padx=5, pady=5)
+        # Built-in categories in a compact column
+        self.category_frame = ttk.Frame(left_frame)
+        self.category_frame.pack(fill=tk.X, pady=(5, 0))
+
+        # "All Files" checkbox first
+        self.all_files_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self.category_frame, text="All Files",
+            variable=self.all_files_var, command=self.on_all_files_toggle
+        ).pack(anchor=tk.W)
+
+        # Then the built-in categories (excluding 'all')
+        builtin_cats = [k for k in EXTENSION_PRESETS.keys() if k != "all"]
+        for cat in builtin_cats:
+            var = tk.BooleanVar(value=(cat == "images"))  # Default: images selected
+            self.category_vars[cat] = var
+            cb = ttk.Checkbutton(
+                self.category_frame, text=cat.capitalize(),
+                variable=var, command=self.on_category_change
+            )
+            cb.pack(anchor=tk.W)
+
+        # Custom categories section
+        ttk.Separator(left_frame, orient="horizontal").pack(fill=tk.X, pady=5)
+
+        custom_header = ttk.Frame(left_frame)
+        custom_header.pack(fill=tk.X)
+        ttk.Label(custom_header, text="Custom", font=("TkDefaultFont", 9, "bold")).pack(side=tk.LEFT)
+        ttk.Button(custom_header, text="+", command=self.add_custom_category, width=2).pack(side=tk.RIGHT)
+
+        # Frame to hold custom category checkboxes
+        self.custom_cat_container = ttk.Frame(left_frame)
+        self.custom_cat_container.pack(fill=tk.X, pady=(2, 0))
+
+        # === RIGHT SIDE: Extensions ===
+        right_frame = ttk.Frame(types_container)
+        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Extension header with buttons
+        ext_header = ttk.Frame(right_frame)
+        ext_header.pack(fill=tk.X)
+        ttk.Label(ext_header, text="Extensions", font=("TkDefaultFont", 9, "bold")).pack(side=tk.LEFT)
+        ttk.Button(ext_header, text="All", command=self.select_all_exts, width=4).pack(side=tk.RIGHT, padx=(2, 0))
+        ttk.Button(ext_header, text="None", command=self.clear_all_exts, width=5).pack(side=tk.RIGHT)
+
+        # Extension checkboxes frame (scrollable, vertical)
+        checkbox_container = ttk.Frame(right_frame)
+        checkbox_container.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
 
         # Canvas for scrollable checkboxes
-        self.checkbox_canvas = tk.Canvas(checkbox_container, height=80)
-        scrollbar = ttk.Scrollbar(checkbox_container, orient="horizontal", command=self.checkbox_canvas.xview)
+        self.checkbox_canvas = tk.Canvas(checkbox_container, height=120)
+        scrollbar_y = ttk.Scrollbar(checkbox_container, orient="vertical", command=self.checkbox_canvas.yview)
         self.checkbox_frame = ttk.Frame(self.checkbox_canvas)
 
-        self.checkbox_canvas.configure(xscrollcommand=scrollbar.set)
-        scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.checkbox_canvas.pack(side=tk.TOP, fill=tk.X)
+        self.checkbox_canvas.configure(yscrollcommand=scrollbar_y.set)
+        scrollbar_y.pack(side=tk.RIGHT, fill=tk.Y)
+        self.checkbox_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.checkbox_window = self.checkbox_canvas.create_window((0, 0), window=self.checkbox_frame, anchor="nw")
         self.checkbox_frame.bind("<Configure>", self.on_checkbox_frame_configure)
+        self.checkbox_canvas.bind("<Configure>", lambda e: self.checkbox_canvas.itemconfig(self.checkbox_window, width=e.width))
 
-        # Initialize checkboxes for default preset
+        # Initialize checkboxes for default selection
         self.update_extension_checkboxes()
 
-        # Custom extensions entry
+        # Custom extensions entry with save to category (below the main container)
         custom_row = ttk.Frame(types_frame)
-        custom_row.pack(fill=tk.X, padx=5, pady=5)
+        custom_row.pack(fill=tk.X, padx=5, pady=(5, 0))
 
-        ttk.Label(custom_row, text="Add custom:").pack(side=tk.LEFT)
+        ttk.Label(custom_row, text="Add:").pack(side=tk.LEFT)
         self.custom_ext_var = tk.StringVar()
-        self.custom_ext_entry = ttk.Entry(custom_row, textvariable=self.custom_ext_var, width=25)
+        self.custom_ext_entry = ttk.Entry(custom_row, textvariable=self.custom_ext_var, width=18)
         self.custom_ext_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Label(custom_row, text="(e.g. .map,.rec)").pack(side=tk.LEFT)
+        ttk.Label(custom_row, text="(.ext,.ext)", foreground="gray").pack(side=tk.LEFT)
+        ttk.Button(custom_row, text="Save to Category", command=self.save_extensions_to_category).pack(side=tk.RIGHT)
 
         # --- Output Directory Section ---
         dir_frame = ttk.LabelFrame(main_frame, text="Save To", padding="5")
@@ -219,22 +266,149 @@ class CrawlerGUI:
             widget.destroy()
         self.ext_checkboxes.clear()
 
-        # Get extensions for selected preset
-        preset = self.preset_var.get()
-        extensions = EXTENSION_PRESETS.get(preset, set())
-
-        if not extensions:
-            ttk.Label(self.checkbox_frame, text="(All file types will be downloaded)").pack(side=tk.LEFT, padx=5)
+        # Check if "All Files" is selected
+        if self.all_files_var.get():
+            ttk.Label(self.checkbox_frame, text="(All file types)", foreground="gray").grid(row=0, column=0, sticky=tk.W)
             return
 
-        # Create checkbox for each extension
-        for ext in sorted(extensions):
+        # Collect extensions from all selected categories
+        extensions = set()
+        for cat, var in self.category_vars.items():
+            if var.get():
+                # Built-in category extensions
+                extensions |= EXTENSION_PRESETS.get(cat, set())
+                # User additions to built-in categories
+                extensions |= self.category_additions.get(cat, set())
+                # Custom category extensions
+                extensions |= self.custom_categories.get(cat, set())
+
+        if not extensions:
+            ttk.Label(self.checkbox_frame, text="(Select a category)", foreground="gray").grid(row=0, column=0, sticky=tk.W)
+            return
+
+        # Create checkboxes in grid layout (3 columns)
+        sorted_exts = sorted(extensions)
+        cols = 3
+        for i, ext in enumerate(sorted_exts):
             var = tk.BooleanVar(value=True)
             self.ext_checkboxes[ext] = var
-            cb = ttk.Checkbutton(self.checkbox_frame, text=ext, variable=var)
-            cb.pack(side=tk.LEFT, padx=3)
+            cb = ttk.Checkbutton(self.checkbox_frame, text=ext, variable=var, width=8)
+            cb.grid(row=i // cols, column=i % cols, sticky=tk.W, padx=2, pady=1)
 
-    def on_preset_change(self, event=None):
+    def on_category_change(self):
+        """Called when any category checkbox changes."""
+        # If a category is checked, uncheck "All Files"
+        if any(var.get() for var in self.category_vars.values()):
+            self.all_files_var.set(False)
+        self.update_extension_checkboxes()
+
+    def on_all_files_toggle(self):
+        """Called when 'All Files' checkbox changes."""
+        if self.all_files_var.get():
+            # Uncheck all categories when "All Files" is selected
+            for var in self.category_vars.values():
+                var.set(False)
+        self.update_extension_checkboxes()
+
+    def add_custom_category(self):
+        """Open dialog to add a custom category."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add Custom Category")
+        dialog.geometry("350x150")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center the dialog
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - 350) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 150) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        frame = ttk.Frame(dialog, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        # Name entry
+        name_row = ttk.Frame(frame)
+        name_row.pack(fill=tk.X, pady=5)
+        ttk.Label(name_row, text="Name:").pack(side=tk.LEFT)
+        name_var = tk.StringVar()
+        name_entry = ttk.Entry(name_row, textvariable=name_var, width=25)
+        name_entry.pack(side=tk.LEFT, padx=(10, 0))
+
+        # Extensions entry
+        ext_row = ttk.Frame(frame)
+        ext_row.pack(fill=tk.X, pady=5)
+        ttk.Label(ext_row, text="Extensions:").pack(side=tk.LEFT)
+        ext_var = tk.StringVar()
+        ext_entry = ttk.Entry(ext_row, textvariable=ext_var, width=25)
+        ext_entry.pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(frame, text="(comma separated, e.g. .dat,.bin,.sav)", foreground="gray").pack(anchor=tk.W)
+
+        def save_category():
+            name = name_var.get().strip().lower()
+            exts = ext_var.get().strip()
+
+            if not name:
+                return
+            if name in EXTENSION_PRESETS or name in self.custom_categories:
+                # Name already exists
+                return
+
+            # Parse extensions
+            ext_set = set()
+            for ext in exts.split(","):
+                ext = ext.strip().lower()
+                if ext and not ext.startswith("."):
+                    ext = "." + ext
+                if ext:
+                    ext_set.add(ext)
+
+            if not ext_set:
+                return
+
+            # Add custom category
+            self.custom_categories[name] = ext_set
+            self.add_custom_category_checkbox(name)
+            self.save_custom_categories()
+            dialog.destroy()
+
+        # Buttons
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(fill=tk.X, pady=(15, 0))
+        ttk.Button(btn_row, text="Add", command=save_category).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=(10, 0))
+
+        name_entry.focus_set()
+
+    def add_custom_category_checkbox(self, name, auto_check=True):
+        """Add a checkbox for a custom category."""
+        row = ttk.Frame(self.custom_cat_container)
+        row.pack(fill=tk.X, pady=1)
+
+        var = tk.BooleanVar(value=auto_check)
+        self.category_vars[name] = var
+
+        cb = ttk.Checkbutton(
+            row, text=name.capitalize(),
+            variable=var, command=self.on_category_change
+        )
+        cb.pack(side=tk.LEFT)
+
+        # Show extensions in gray
+        exts_str = ", ".join(sorted(self.custom_categories[name]))
+        ttk.Label(row, text=f"({exts_str})", foreground="gray").pack(side=tk.LEFT, padx=(5, 0))
+
+        # Remove button
+        def remove_cat():
+            del self.custom_categories[name]
+            del self.category_vars[name]
+            row.destroy()
+            self.save_custom_categories()
+            self.update_extension_checkboxes()
+
+        ttk.Button(row, text="x", command=remove_cat, width=2).pack(side=tk.RIGHT)
+
+        # Update extensions display
         self.update_extension_checkboxes()
 
     def select_all_exts(self):
@@ -244,6 +418,109 @@ class CrawlerGUI:
     def clear_all_exts(self):
         for var in self.ext_checkboxes.values():
             var.set(False)
+
+    def load_custom_categories(self):
+        """Load custom categories from JSON file."""
+        if os.path.exists(CUSTOM_CATEGORIES_FILE):
+            try:
+                with open(CUSTOM_CATEGORIES_FILE, 'r') as f:
+                    data = json.load(f)
+                    # Convert lists back to sets
+                    self.custom_categories = {k: set(v) for k, v in data.get('custom', {}).items()}
+                    self.category_additions = {k: set(v) for k, v in data.get('additions', {}).items()}
+            except (json.JSONDecodeError, IOError):
+                pass
+
+    def load_custom_category_checkboxes(self):
+        """Create checkboxes for saved custom categories on startup."""
+        for name in list(self.custom_categories.keys()):
+            self.add_custom_category_checkbox(name, auto_check=False)
+
+    def save_custom_categories(self):
+        """Save custom categories to JSON file."""
+        data = {
+            'custom': {k: sorted(list(v)) for k, v in self.custom_categories.items()},
+            'additions': {k: sorted(list(v)) for k, v in self.category_additions.items() if v}
+        }
+        try:
+            with open(CUSTOM_CATEGORIES_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+        except IOError:
+            pass
+
+    def save_extensions_to_category(self):
+        """Open dialog to save extensions to a category."""
+        exts_text = self.custom_ext_var.get().strip()
+        if not exts_text:
+            return
+
+        # Parse extensions
+        new_exts = set()
+        for ext in exts_text.split(","):
+            ext = ext.strip().lower()
+            if ext and not ext.startswith("."):
+                ext = "." + ext
+            if ext:
+                new_exts.add(ext)
+
+        if not new_exts:
+            return
+
+        # Create dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Save Extensions to Category")
+        dialog.geometry("300x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - 300) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - 200) // 2
+        dialog.geometry(f"+{x}+{y}")
+
+        frame = ttk.Frame(dialog, padding="10")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text=f"Extensions: {', '.join(sorted(new_exts))}").pack(anchor=tk.W, pady=(0, 10))
+        ttk.Label(frame, text="Select category to add to:").pack(anchor=tk.W)
+
+        # Listbox with all categories
+        listbox = tk.Listbox(frame, height=6, exportselection=False)
+        listbox.pack(fill=tk.X, pady=5)
+
+        # Add built-in categories
+        all_cats = [k for k in EXTENSION_PRESETS.keys() if k != "all"]
+        # Add custom categories
+        all_cats.extend(self.custom_categories.keys())
+
+        for cat in all_cats:
+            listbox.insert(tk.END, cat.capitalize())
+
+        def save_to_selected():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            cat_name = all_cats[sel[0]]
+
+            if cat_name in self.custom_categories:
+                # Add to custom category
+                self.custom_categories[cat_name] |= new_exts
+            else:
+                # Add to built-in category additions
+                if cat_name not in self.category_additions:
+                    self.category_additions[cat_name] = set()
+                self.category_additions[cat_name] |= new_exts
+
+            self.save_custom_categories()
+            self.custom_ext_var.set("")  # Clear entry
+            self.update_extension_checkboxes()
+            dialog.destroy()
+
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(btn_row, text="Save", command=save_to_selected).pack(side=tk.LEFT)
+        ttk.Button(btn_row, text="Cancel", command=dialog.destroy).pack(side=tk.LEFT, padx=(10, 0))
 
     def browse_directory(self):
         directory = filedialog.askdirectory(initialdir=self.dir_var.get())
