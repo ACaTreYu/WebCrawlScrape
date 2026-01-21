@@ -2,6 +2,34 @@
 
 All notable changes to WebCrawlScrape will be documented in this file.
 
+## [00.00.02] - 2026-01-21
+
+### Added
+- **Robots.txt support** - Optional respect for robots.txt rules
+- **Rate limiting** - Configurable delay between requests (0-10 seconds)
+- **Max depth control** - Limit crawl depth from starting URL (0 = unlimited)
+- **Duplicate detection** - Skip files with identical content using MD5 hash
+- **Save webpages** - Option to save crawled HTML pages to `html/` subfolder
+- GUI: New options panel with all crawler settings
+  - Max depth spinbox
+  - Delay slider
+  - Respect robots.txt checkbox
+  - Skip duplicates checkbox
+  - Save webpages checkbox
+
+### Changed
+- Crawler now tracks depth and respects max_depth parameter
+- Download function returns status for better statistics
+- Expanded crawl statistics (duplicates skipped, robots blocked, pages saved)
+- Archive.org folder naming now includes URL path (e.g., `arc.won.net/guide/` -> `arcwonguide`)
+
+### Technical
+- `RobotsChecker` class for robots.txt parsing
+- `DuplicateDetector` class for hash-based deduplication
+- `get_url_depth()` helper function
+
+---
+
 ## [00.00.01] - 2026-01-21
 
 ### Added

@@ -20,7 +20,7 @@ class CrawlerGUI:
     def __init__(self, root):
         self.root = root
         self.root.title(f"WebCrawlScrape v{VERSION}")
-        self.root.geometry("650x600")
+        self.root.geometry("650x680")
         self.root.resizable(True, True)
 
         self.is_crawling = False
@@ -137,19 +137,58 @@ class CrawlerGUI:
         opts_frame = ttk.LabelFrame(main_frame, text="Options", padding="5")
         opts_frame.pack(fill=tk.X, pady=(0, 10))
 
-        opts_inner = ttk.Frame(opts_frame)
-        opts_inner.pack(fill=tk.X, padx=5, pady=5)
+        # Row 1: Max pages and Max depth
+        opts_row1 = ttk.Frame(opts_frame)
+        opts_row1.pack(fill=tk.X, padx=5, pady=2)
 
-        ttk.Label(opts_inner, text="Max pages:").pack(side=tk.LEFT)
+        ttk.Label(opts_row1, text="Max pages:").pack(side=tk.LEFT)
         self.max_pages_var = tk.StringVar(value=str(DEFAULT_MAX_PAGES))
-        max_pages_spin = ttk.Spinbox(
-            opts_inner,
-            from_=1,
-            to=9999,
-            textvariable=self.max_pages_var,
-            width=8
-        )
-        max_pages_spin.pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Spinbox(
+            opts_row1, from_=1, to=9999,
+            textvariable=self.max_pages_var, width=6
+        ).pack(side=tk.LEFT, padx=(5, 20))
+
+        ttk.Label(opts_row1, text="Max depth:").pack(side=tk.LEFT)
+        self.max_depth_var = tk.StringVar(value="0")
+        ttk.Spinbox(
+            opts_row1, from_=0, to=99,
+            textvariable=self.max_depth_var, width=4
+        ).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Label(opts_row1, text="(0 = unlimited)", foreground="gray").pack(side=tk.LEFT, padx=5)
+
+        # Row 2: Delay
+        opts_row2 = ttk.Frame(opts_frame)
+        opts_row2.pack(fill=tk.X, padx=5, pady=2)
+
+        ttk.Label(opts_row2, text="Delay between requests:").pack(side=tk.LEFT)
+        self.delay_var = tk.StringVar(value="0.0")
+        ttk.Spinbox(
+            opts_row2, from_=0.0, to=10.0, increment=0.1,
+            textvariable=self.delay_var, width=5
+        ).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Label(opts_row2, text="seconds", foreground="gray").pack(side=tk.LEFT, padx=5)
+
+        # Row 3: Checkboxes
+        opts_row3 = ttk.Frame(opts_frame)
+        opts_row3.pack(fill=tk.X, padx=5, pady=5)
+
+        self.robots_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            opts_row3, text="Respect robots.txt",
+            variable=self.robots_var
+        ).pack(side=tk.LEFT, padx=(0, 15))
+
+        self.duplicates_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            opts_row3, text="Skip duplicates",
+            variable=self.duplicates_var
+        ).pack(side=tk.LEFT, padx=(0, 15))
+
+        self.save_pages_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            opts_row3, text="Save webpages (html/)",
+            variable=self.save_pages_var
+        ).pack(side=tk.LEFT)
 
         # --- Buttons ---
         btn_frame = ttk.Frame(main_frame)
@@ -300,7 +339,7 @@ class CrawlerGUI:
     def _get_archive_folder_name(self, original_url):
         """
         Extract folder name from archived original URL.
-        Example: http://arc.won.net/ -> arcwon
+        Example: http://arc.won.net/guide/ -> arcwonguide
         """
         # Parse the original URL
         if not original_url.startswith(('http://', 'https://')):
@@ -308,6 +347,7 @@ class CrawlerGUI:
 
         parsed = urlparse(original_url)
         domain = parsed.netloc
+        path = parsed.path
 
         # Remove www. prefix
         if domain.startswith("www."):
@@ -320,8 +360,18 @@ class CrawlerGUI:
                 domain = domain[:-len(tld)]
                 break
 
-        # Remove all dots and dashes, join as one word
-        folder_name = re.sub(r'[.\-_]', '', domain)
+        # Clean path - remove leading/trailing slashes and file extensions
+        if path:
+            path = path.strip('/')
+            path = re.sub(r'\.[a-zA-Z0-9]+$', '', path)  # Remove file extension
+
+        # Combine domain and path
+        full_name = domain
+        if path:
+            full_name = f"{domain}/{path}"
+
+        # Remove all dots, dashes, slashes - join as one word
+        folder_name = re.sub(r'[.\-_/]', '', full_name)
 
         return folder_name if folder_name else "archive"
 
@@ -346,6 +396,22 @@ class CrawlerGUI:
         except ValueError:
             max_pages = DEFAULT_MAX_PAGES
 
+        try:
+            max_depth = int(self.max_depth_var.get())
+            if max_depth == 0:
+                max_depth = None  # 0 means unlimited
+        except ValueError:
+            max_depth = None
+
+        try:
+            delay = float(self.delay_var.get())
+        except ValueError:
+            delay = 0.0
+
+        respect_robots = self.robots_var.get()
+        detect_duplicates = self.duplicates_var.get()
+        save_pages = self.save_pages_var.get()
+
         extensions = self.get_extensions()
 
         if not extensions and self.ext_checkboxes:
@@ -360,18 +426,19 @@ class CrawlerGUI:
         self.log(f"URL: {url}")
         self.log(f"Extensions: {', '.join(sorted(extensions)) if extensions else '(all)'}")
         self.log(f"Output: {out_dir}")
-        self.log(f"Max pages: {max_pages}")
+        self.log(f"Max pages: {max_pages}, Max depth: {max_depth if max_depth else 'unlimited'}")
+        self.log(f"Delay: {delay}s, Robots: {respect_robots}, Dedup: {detect_duplicates}, Save HTML: {save_pages}")
         self.log("=" * 50)
 
         # Run crawler in thread
         thread = threading.Thread(
             target=self.run_crawler,
-            args=(url, extensions, out_dir, max_pages),
+            args=(url, extensions, out_dir, max_pages, max_depth, delay, respect_robots, detect_duplicates, save_pages),
             daemon=True
         )
         thread.start()
 
-    def run_crawler(self, url, extensions, out_dir, max_pages):
+    def run_crawler(self, url, extensions, out_dir, max_pages, max_depth, delay, respect_robots, detect_duplicates, save_pages):
         # Redirect print to log
         class LogRedirector:
             def __init__(self, gui):
@@ -390,7 +457,12 @@ class CrawlerGUI:
                 start_url=url,
                 allowed_exts=extensions,
                 out_dir=out_dir,
-                max_pages=max_pages
+                max_pages=max_pages,
+                max_depth=max_depth,
+                delay=delay,
+                respect_robots=respect_robots,
+                detect_duplicates=detect_duplicates,
+                save_pages=save_pages
             )
         except Exception as e:
             self.root.after(0, lambda: self.log(f"[ERROR] {e}"))
