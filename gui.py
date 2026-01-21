@@ -8,19 +8,23 @@ from tkinter import ttk, filedialog, scrolledtext
 import threading
 import os
 import sys
+import re
+from urllib.parse import urlparse
 
 from config import EXTENSION_PRESETS, DEFAULT_MAX_PAGES
 from crawler import crawl
+from version import VERSION
 
 
 class CrawlerGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("WebCrawlScrape")
-        self.root.geometry("600x500")
+        self.root.title(f"WebCrawlScrape v{VERSION}")
+        self.root.geometry("650x600")
         self.root.resizable(True, True)
 
         self.is_crawling = False
+        self.ext_checkboxes = {}  # Store extension checkbox variables
         self.create_widgets()
 
     def create_widgets(self):
@@ -40,28 +44,54 @@ class CrawlerGUI:
         types_frame = ttk.LabelFrame(main_frame, text="File Types", padding="5")
         types_frame.pack(fill=tk.X, pady=(0, 10))
 
-        # Preset dropdown
-        preset_frame = ttk.Frame(types_frame)
-        preset_frame.pack(fill=tk.X, padx=5, pady=5)
+        # Preset dropdown row
+        preset_row = ttk.Frame(types_frame)
+        preset_row.pack(fill=tk.X, padx=5, pady=5)
 
-        ttk.Label(preset_frame, text="Preset:").pack(side=tk.LEFT)
+        ttk.Label(preset_row, text="Category:").pack(side=tk.LEFT)
         self.preset_var = tk.StringVar(value="images")
         preset_combo = ttk.Combobox(
-            preset_frame,
+            preset_row,
             textvariable=self.preset_var,
             values=list(EXTENSION_PRESETS.keys()),
             state="readonly",
             width=15
         )
-        preset_combo.pack(side=tk.LEFT, padx=(5, 20))
+        preset_combo.pack(side=tk.LEFT, padx=(5, 10))
         preset_combo.bind("<<ComboboxSelected>>", self.on_preset_change)
 
+        # Select All / Deselect All buttons
+        ttk.Button(preset_row, text="Select All", command=self.select_all_exts, width=10).pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset_row, text="Clear All", command=self.clear_all_exts, width=10).pack(side=tk.LEFT, padx=2)
+
+        # Extension checkboxes frame (scrollable)
+        checkbox_container = ttk.Frame(types_frame)
+        checkbox_container.pack(fill=tk.X, padx=5, pady=5)
+
+        # Canvas for scrollable checkboxes
+        self.checkbox_canvas = tk.Canvas(checkbox_container, height=80)
+        scrollbar = ttk.Scrollbar(checkbox_container, orient="horizontal", command=self.checkbox_canvas.xview)
+        self.checkbox_frame = ttk.Frame(self.checkbox_canvas)
+
+        self.checkbox_canvas.configure(xscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.checkbox_canvas.pack(side=tk.TOP, fill=tk.X)
+
+        self.checkbox_window = self.checkbox_canvas.create_window((0, 0), window=self.checkbox_frame, anchor="nw")
+        self.checkbox_frame.bind("<Configure>", self.on_checkbox_frame_configure)
+
+        # Initialize checkboxes for default preset
+        self.update_extension_checkboxes()
+
         # Custom extensions entry
-        ttk.Label(preset_frame, text="Or custom:").pack(side=tk.LEFT)
+        custom_row = ttk.Frame(types_frame)
+        custom_row.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Label(custom_row, text="Add custom:").pack(side=tk.LEFT)
         self.custom_ext_var = tk.StringVar()
-        self.custom_ext_entry = ttk.Entry(preset_frame, textvariable=self.custom_ext_var, width=30)
+        self.custom_ext_entry = ttk.Entry(custom_row, textvariable=self.custom_ext_var, width=25)
         self.custom_ext_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Label(preset_frame, text="(e.g. .zip,.png)").pack(side=tk.LEFT)
+        ttk.Label(custom_row, text="(e.g. .map,.rec)").pack(side=tk.LEFT)
 
         # --- Output Directory Section ---
         dir_frame = ttk.LabelFrame(main_frame, text="Save To", padding="5")
@@ -71,11 +101,37 @@ class CrawlerGUI:
         dir_inner.pack(fill=tk.X, padx=5, pady=5)
 
         self.dir_var = tk.StringVar(value=os.path.join(os.getcwd(), "downloads"))
-        self.dir_entry = ttk.Entry(dir_inner, textvariable=self.dir_var, width=55)
+        self.dir_entry = ttk.Entry(dir_inner, textvariable=self.dir_var, width=50)
         self.dir_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         browse_btn = ttk.Button(dir_inner, text="Browse...", command=self.browse_directory)
         browse_btn.pack(side=tk.LEFT, padx=(5, 0))
+
+        # Organize by website checkbox
+        self.organize_by_site_var = tk.BooleanVar(value=True)
+        organize_cb = ttk.Checkbutton(
+            dir_frame,
+            text="Create subfolder from URL:",
+            variable=self.organize_by_site_var,
+            command=self.update_folder_preview
+        )
+        organize_cb.pack(anchor=tk.W, padx=5, pady=(0, 2))
+
+        # Folder name preview
+        preview_frame = ttk.Frame(dir_frame)
+        preview_frame.pack(fill=tk.X, padx=20, pady=(0, 5))
+
+        ttk.Label(preview_frame, text="Folder:").pack(side=tk.LEFT)
+        self.folder_preview_var = tk.StringVar(value="")
+        self.folder_preview_label = ttk.Label(
+            preview_frame,
+            textvariable=self.folder_preview_var,
+            foreground="gray"
+        )
+        self.folder_preview_label.pack(side=tk.LEFT, padx=5)
+
+        # Bind URL entry to update preview
+        self.url_var.trace_add("write", lambda *args: self.update_folder_preview())
 
         # --- Options Section ---
         opts_frame = ttk.LabelFrame(main_frame, text="Options", padding="5")
@@ -112,17 +168,62 @@ class CrawlerGUI:
         log_frame = ttk.LabelFrame(main_frame, text="Log", padding="5")
         log_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=12, state=tk.DISABLED)
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=10, state=tk.DISABLED)
         self.log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
+    def on_checkbox_frame_configure(self, event):
+        self.checkbox_canvas.configure(scrollregion=self.checkbox_canvas.bbox("all"))
+
+    def update_extension_checkboxes(self):
+        # Clear existing checkboxes
+        for widget in self.checkbox_frame.winfo_children():
+            widget.destroy()
+        self.ext_checkboxes.clear()
+
+        # Get extensions for selected preset
+        preset = self.preset_var.get()
+        extensions = EXTENSION_PRESETS.get(preset, set())
+
+        if not extensions:
+            ttk.Label(self.checkbox_frame, text="(All file types will be downloaded)").pack(side=tk.LEFT, padx=5)
+            return
+
+        # Create checkbox for each extension
+        for ext in sorted(extensions):
+            var = tk.BooleanVar(value=True)
+            self.ext_checkboxes[ext] = var
+            cb = ttk.Checkbutton(self.checkbox_frame, text=ext, variable=var)
+            cb.pack(side=tk.LEFT, padx=3)
+
     def on_preset_change(self, event=None):
-        # Clear custom when preset selected
-        self.custom_ext_var.set("")
+        self.update_extension_checkboxes()
+
+    def select_all_exts(self):
+        for var in self.ext_checkboxes.values():
+            var.set(True)
+
+    def clear_all_exts(self):
+        for var in self.ext_checkboxes.values():
+            var.set(False)
 
     def browse_directory(self):
         directory = filedialog.askdirectory(initialdir=self.dir_var.get())
         if directory:
             self.dir_var.set(directory)
+
+    def update_folder_preview(self):
+        """Update the folder name preview based on current URL."""
+        if not self.organize_by_site_var.get():
+            self.folder_preview_var.set("(disabled)")
+            return
+
+        url = self.url_var.get().strip()
+        if not url or url == "https://" or "://" not in url:
+            self.folder_preview_var.set("(enter URL above)")
+            return
+
+        folder_name = self.get_site_folder_name(url)
+        self.folder_preview_var.set(folder_name if folder_name else "(invalid URL)")
 
     def log(self, message):
         self.log_text.config(state=tk.NORMAL)
@@ -136,21 +237,93 @@ class CrawlerGUI:
         self.log_text.config(state=tk.DISABLED)
 
     def get_extensions(self):
+        exts = set()
+
+        # Get checked extensions from checkboxes
+        for ext, var in self.ext_checkboxes.items():
+            if var.get():
+                exts.add(ext)
+
+        # Add custom extensions
         custom = self.custom_ext_var.get().strip()
         if custom:
-            # Parse custom extensions
-            exts = set()
             for ext in custom.split(","):
                 ext = ext.strip().lower()
                 if ext and not ext.startswith("."):
                     ext = "." + ext
                 if ext:
                     exts.add(ext)
-            return exts
-        else:
-            # Use preset
-            preset = self.preset_var.get()
-            return EXTENSION_PRESETS.get(preset, set())
+
+        return exts
+
+    def get_site_folder_name(self, url):
+        """
+        Extract a clean folder name from URL.
+        Example: www.abc.com/1/2/3/4.html -> abc-com-1-2-3-4
+        Archive: web.archive.org/web/20001018021550/http://arc.won.net/ -> arcwon
+        """
+        # Handle web.archive.org URLs specially
+        archive_match = re.match(r'https?://web\.archive\.org/web/\d+/(.+)', url)
+        if archive_match:
+            original_url = archive_match.group(1)
+            return self._get_archive_folder_name(original_url)
+
+        # Standard URL handling
+        parsed = urlparse(url)
+        domain = parsed.netloc
+        path = parsed.path
+
+        # Remove www. prefix
+        if domain.startswith("www."):
+            domain = domain[4:]
+
+        # Remove file extension from path
+        if path:
+            # Remove leading slash and file extension
+            path = path.lstrip("/")
+            path = re.sub(r'\.[a-zA-Z0-9]+$', '', path)
+
+        # Combine domain and path
+        full_name = domain
+        if path:
+            full_name = f"{domain}/{path}"
+
+        # Replace dots, slashes, and invalid chars with dashes
+        folder_name = re.sub(r'[./<>:"/\\|?*]+', '-', full_name)
+
+        # Clean up multiple dashes and trailing dashes
+        folder_name = re.sub(r'-+', '-', folder_name)
+        folder_name = folder_name.strip('-')
+
+        return folder_name
+
+    def _get_archive_folder_name(self, original_url):
+        """
+        Extract folder name from archived original URL.
+        Example: http://arc.won.net/ -> arcwon
+        """
+        # Parse the original URL
+        if not original_url.startswith(('http://', 'https://')):
+            original_url = 'http://' + original_url
+
+        parsed = urlparse(original_url)
+        domain = parsed.netloc
+
+        # Remove www. prefix
+        if domain.startswith("www."):
+            domain = domain[4:]
+
+        # Remove common TLDs
+        tlds = ['.com', '.net', '.org', '.edu', '.gov', '.co.uk', '.io', '.info']
+        for tld in tlds:
+            if domain.endswith(tld):
+                domain = domain[:-len(tld)]
+                break
+
+        # Remove all dots and dashes, join as one word
+        folder_name = re.sub(r'[.\-_]', '', domain)
+
+        return folder_name if folder_name else "archive"
 
     def start_crawl(self):
         url = self.url_var.get().strip()
@@ -163,12 +336,21 @@ class CrawlerGUI:
             self.log("[ERROR] Please select output directory")
             return
 
+        # Organize by website subfolder
+        if self.organize_by_site_var.get():
+            site_folder = self.get_site_folder_name(url)
+            out_dir = os.path.join(out_dir, site_folder)
+
         try:
             max_pages = int(self.max_pages_var.get())
         except ValueError:
             max_pages = DEFAULT_MAX_PAGES
 
         extensions = self.get_extensions()
+
+        if not extensions and self.ext_checkboxes:
+            self.log("[ERROR] Please select at least one file type")
+            return
 
         self.is_crawling = True
         self.start_btn.config(state=tk.DISABLED)
